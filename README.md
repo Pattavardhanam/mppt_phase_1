@@ -4,32 +4,31 @@
 [![DOCS](../../actions/workflows/docs.yaml/badge.svg)](../../actions/workflows/docs.yaml)
 
 # Who
-
-Aditya Pattavardhanam (pattavardhanam)
+pattavardhanam
 
 # Why
 
-Phase 1 of a fully analog perturb-and-observe maximum power point tracker (MPPT) for a photovoltaic source, aimed at small-satellite power systems. The full tracker has no ADC and no digital control loop. It dithers the operating voltage at 5 kHz, samples the PV power in each half of the dither, and integrates the sign of the difference, delta P = P_H - P_L.
+First tapeout of a fully analog perturb-and-observe maximum power point tracker (MPPT) for small-satellite (CanSat/CubeSat class) solar panels, with no ADC and no digital control loop.
 
-Delta P at the maximum power point is only 0.15 to 0.3 % of full-scale power, so the tracker's accuracy is set by offsets, charge injection and hold-capacitor leakage, none of which simulation predicts well. This chip puts just that detection chain on silicon so the real numbers can set the specs of the full controller (multiplier, instrumentation amplifiers, PWM, dither oscillator, integrator) in a later tape-out.
-
-Target shuttle: Tiny Tapeout SKYTT26d, 1x2 analog tile, SKY130A.
+The tracker dithers the panel voltage at 5 kHz, samples the power in the high and low halves of the dither, and decides which way to move from the sign of the difference, ΔP. At the maximum power point ΔP is under 0.3 % of full-scale power, so the accuracy of the tracker is set by offset, charge injection and leakage in this detection path, not by the multiplier or the converter. Those are the quantities simulation is least able to predict, so this chip builds only the ΔP detection chain and measures them on silicon before the full controller is committed.
 
 # How
 
-The chip takes the two power samples as two static DC inputs, `VIN_H` and `VIN_L`, so a measurement is a static transfer curve rather than a fast waveform. The chain is:
+Test chip for one 1x2 Tiny Tapeout analog tile (SKYTT26d, SKY130A, 1.8 V). Two DC inputs stand in for the multiplier output in the high and low halves of the dither, so offsets are read from a static transfer curve rather than a dynamic stimulus.
 
-1. **Dual sample-and-hold.** Two matched NMOS-switch and 5 pF paths. External clocks select which input each path samples and when it holds.
-2. **Unity-gain buffers** from each hold node, so nothing loads the hold capacitor (a resistive subtractor would draw microamps against a picoampere droop budget).
-3. **Subtractor**, gain 10, forming 10 x (P_H - P_L) around a 0.9 V common mode.
-4. **StrongARM comparator**, strobed once per decision, giving the sign of delta P.
+```
+PH_IN, PL_IN -> [S&H H, S&H L] -> buffers -> subtractor (G = 10) -> StrongARM -> CMP_OUT
+                                      |
+                                   test mux -> VMON
+```
 
-For measurability the chip adds:
-- a test mux that routes internal nodes to one monitor pin, always through a buffer, never directly from a hold node;
-- bypass modes that reuse the two input pins to drive the subtractor or the comparator directly, so each block's offset can be separated from the chain;
-- three single-path 2 pF leakage structures (minimum switch, 4x width switch, stacked switch), each read through a small source follower. Leakage is independent of capacitance (dV = I t / C), so the switch geometry, not the capacitor, is what these structures vary.
+- **Sample-and-hold pair:** NMOS switches and 5 pF MIM hold capacitors, with identical layout of the two paths. Only the mismatch between them matters, because a step common to both cancels in ΔP.
+- **Leakage test structures:** single-path 2 pF holds with different switch geometries (minimum, 4x width, stacked), read through small source followers. Droop rate gives the leakage and shows which part of the switch dominates.
+- **Buffers and subtractor:** one reused two-stage opamp as unity-gain hold buffers and as the amplifier of a resistive difference stage. Buffers keep the monitor path and the subtractor from discharging the hold nodes.
+- **Comparator:** StrongARM latch, strobed once per decision.
+- **Mode and clocks:** all timing is supplied externally on digital pins, so track windows, non-overlap and strobe phase can be swept on the bench. Modes bypass the S&H, or the S&H and the subtractor, to separate the error sources.
 
-Droop is measured as a slow decay of the held value with the clocks held static. 1 mV/ms on 1 pF is 1 pA.
+Built with the aicex flow (xschem, ngspice via cicsim, magic, netgen).
 
 # What
 
@@ -37,58 +36,46 @@ Droop is measured as a slow decay of the held value with the clocks held static.
 | :----           |  :----:       |
 | Schematic       | design/MPPT_PHASE_1_SKY130A/MPPT_PHASE_1.sch |
 | Layout          | design/MPPT_PHASE_1_SKY130A/MPPT_PHASE_1.mag |
-
-Blocks (status updated as each is finished):
-
-| Block | Cell | Status |
-| :---- | :---: | :---- |
-| One S&H path | `sh_unit` | in design |
-| S&H pair | `sh_pair` | planned |
-| Opamp (buffers, subtractor) | `opamp` | planned |
-| Subtractor | planned | planned |
-| StrongARM comparator | reused from earlier work | planned |
-| Test mux and mode logic | planned | planned |
+| S&H, single path | sh_unit (planned) |
+| S&H, matched pair | sh_pair (planned) |
+| Opamp           | opamp (planned) |
+| Subtractor      | subtractor (planned) |
+| Comparator      | strongarm (planned) |
 
 # Signal interface
 
-Block-level signals. The mapping to Tiny Tapeout pins is not final: the proposal is `VIN_H`, `VIN_L`, `VMON` and `RBIAS` on `ua[0]` to `ua[3]`, the eight digital controls on `ui_in`, and `CMP_OUT` on `uo_out[0]`.
+Provisional until the pin map is frozen. Analog pins are in order from `ua[0]`.
 
 | Signal       | Direction | Domain  | Description                               |
 | :---         | :---:     | :---:   | :---                                      |
 | VDD_1V8      | Input     | VDD_1V8 | Main supply                               |
 | VSS          | Input     | Ground  |                                           |
-| VIN_H        | Input     | Analog  | Power sample for the high half of the dither, 0.7 to 1.1 V |
-| VIN_L        | Input     | Analog  | Power sample for the low half, 0.7 to 1.1 V |
-| VMON         | Output    | Analog  | Monitor: one internal node, selected by SEL |
-| RBIAS        | Input     | Analog  | External bias resistor to VSS             |
-| CLK_H        | Input     | VDD_1V8 | Track clock, high path (high = track)     |
-| CLK_L        | Input     | VDD_1V8 | Track clock, low path (high = track)      |
-| STROBE       | Input     | VDD_1V8 | Comparator strobe                         |
-| MODE[1:0]    | Input     | VDD_1V8 | Chain, bypass S&H, or bypass subtractor   |
-| SEL[2:0]     | Input     | VDD_1V8 | Monitor tap select                        |
-| CMP_OUT      | Output    | VDD_1V8 | Sign of delta P                           |
+| PH_IN (`ua[0]`) | Input  | Analog  | Held in the high half of the dither, 0.7 to 1.1 V |
+| PL_IN (`ua[1]`) | Input  | Analog  | Held in the low half of the dither, 0.7 to 1.1 V |
+| VMON (`ua[2]`)  | Output | Analog  | Monitor: mux of input, held values, subtractor output, comparator input |
+| IBIAS (`ua[3]`) | Input  | Analog  | External bias resistor to ground          |
+| CLK_H, CLK_L | Input     | VDD_1V8 | Track windows of the two S&H paths (high = track) |
+| STROBE       | Input     | VDD_1V8 | Comparator decision strobe                |
+| MODE[1:0]    | Input     | VDD_1V8 | Chain, bypass S&H, bypass subtractor      |
+| MUX_SEL[2:0] | Input     | VDD_1V8 | Selects the monitored node                |
+| CMP_OUT      | Output    | VDD_1V8 | Comparator decision: sign of ΔP           |
+
 
 # Key parameters
 
-Targets, not measurements. Values marked (assumed) are starting points to be confirmed in simulation and on silicon.
+Targets. Measured values are added to this table as the simulations and the silicon come back.
 
 | Parameter           | Min     | Typ             | Max     | Unit  |
 | :---                | :---:   | :---:           | :---:   | :---: |
 | Technology          |         | Skywater 130 nm |         |       |
 | AVDD                | 1.7     | 1.8             | 1.9     | V     |
-| Temperature (specified) | -40 | 27              | 85      | C     |
-| Temperature (simulated) | -40 | 27              | 125     | C     |
-| Input window, VIN_H and VIN_L (assumed) | 0.7 | 0.9 | 1.1 | V |
-| Hold capacitor, main pair (assumed) |  | 5              |         | pF    |
+| Temperature         | -40     | 27              | 125     | C     |
+| Input window (PH_IN, PL_IN) | 0.7 |             | 1.1     | V     |
 | Subtractor gain     |         | 10              |         | V/V   |
-| Chain offset, referred to the input (goal / hard limit) |  | 0.5 / 1.5 |  | mV |
-| Hold-edge step, per path |   | | 0.5     | mV    |
-| Droop rate, 5 pF, 85 C (about 6 pA) |  |      | 1.25    | mV/ms |
-| Comparator input offset |         |                 | 5       | mV    |
-| Resistor ratio mismatch, subtractor (3 sigma) |  |  | 0.3     | %     |
-
-The 0.5 mV goal is 0.1 % of an assumed 0.5 V full-scale power signal. At that offset the tracker settles about 0.33 % of the maximum-power-point voltage away from the peak, costing about 0.006 % of power. The 1.5 mV limit is the point where the offset reaches the tracker's dead-zone edge.
-
-# Test
-
-To be written with the measurement plan: stimulus values for a delta V sweep, clock phase sweeps, and temperature points for droop.
+| Hold capacitor (main pair) |  | 5               |         | pF    |
+| S&H hold-edge step  | -0.5    |                 | 0.5     | mV    |
+| S&H droop rate (5 pF, 85 C) |  |                 | 1.25    | mV/ms |
+| S&H mismatch, H minus L | -0.5 |                 | 0.5     | mV    |
+| Chain offset, referred to input (goal) |  |      | 0.5     | mV    |
+| Chain offset, hard limit |    |                  | 1.5     | mV    |
+| Comparator input offset |     |                  | 5       | mV    |
